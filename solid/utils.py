@@ -1,11 +1,17 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import division
-import os
 import sys
-import re
+import itertools
+if sys.version[0]=='2':
+    from itertools import izip_longest as zip_longest
+else:
+    from itertools import zip_longest
+
 from solid import *
 from math import *
+
+
 
 RIGHT, TOP, LEFT, BOTTOM = range(4)
 EPSILON = 0.01
@@ -497,79 +503,117 @@ def section_cut_xz(body, y_cut_point=0):
 # =====================
 # = Bill of Materials =
 # =====================
-#   Any part defined in a method can be automatically counted using the
-# @bom_part() decorator. After all parts have been created, call
-# bill_of_materials()
-# to generate a report.  Se examples/bom_scad.py for usage
+# Any part defined in a method can be automatically counted using the
+# `@bom_part()` decorator. After all parts have been created, call
+# `bill_of_materials()`
+# to generate a report.  See `examples/bom_scad.py` for usage
+#
+# Additional columns can be added (such as leftover material or URL to part)
+# by calling `set_bom_headers()` with a series of string arguments. 
+#
+# Calling `bom_part()` with additional, non-keyworded arguments will 
+# populate the new columns in order of their addition via bom_headers, or 
+# keyworded arguments can be used in any order.
+
 g_parts_dict = {}
+g_bom_headers = []
 
+def set_bom_headers(*args):
+    global g_bom_headers
+    g_bom_headers += args
 
-def bom_part(description='', per_unit_price=None, currency='US$'):
+def bom_part(description='', per_unit_price=None, currency='US$', *args, **kwargs):
     def wrap(f):
         name = description if description else f.__name__
-        g_parts_dict[name] = [0, currency, per_unit_price]
 
-        def wrapped_f(*args):
+        elements = {}
+        elements.update({'Count':0, 'currency':currency, 'Unit Price':per_unit_price})
+        # This update also adds empty key value pairs to prevent key exceptions.
+        elements.update(dict(zip_longest(g_bom_headers, args, fillvalue='')))
+        elements.update(kwargs)
+
+        g_parts_dict[name] = elements
+
+        def wrapped_f(*wargs):
             name = description if description else f.__name__
-            g_parts_dict[name][0] += 1
-            return f(*args)
+            g_parts_dict[name]['Count'] += 1
+            return f(*wargs)
 
         return wrapped_f
 
     return wrap
 
-
-def bill_of_materials():
-    res = ''
-    res += "%8s\t%8s\t%8s\t%8s\n" % ("Desc.", "Count", "Unit Price", "Total Price")
+def bill_of_materials(csv=False):
+    field_names = ["Description", "Count", "Unit Price", "Total Price"]
+    field_names += g_bom_headers
+    
+    rows = []
+    
     all_costs = {}
-    for desc, (count, currency, price) in g_parts_dict.items():
+    for desc, elements in g_parts_dict.items():
+        count = elements['Count']
+        currency = elements['currency']
+        price = elements['Unit Price']
+
         if count > 0:
             if price:
                 total = price * count
-                try:
-                    all_costs[currency] += total
-                except:
-                    all_costs[currency] = total
-
-                res += ("%8s\t%8d\t%s %8f\t%s %8.2f\n" 
-                        % (desc, count, currency, price, currency, total))
+                if currency not in all_costs:
+                    all_costs[currency] = 0 
+                
+                all_costs[currency] += total
+                unit_price = _currency_str(price, currency)
+                total_price = _currency_str(total, currency)
             else:
-                res += "%8s\t%8d\n" % (desc, count)
+                unit_price = total_price = ""
+            row = [desc, count, unit_price, total_price]
+
+        for key in g_bom_headers:
+            value = elements[key]
+            row.append(value)
+        rows.append(row)
+
+    # Add total costs if we have values to add
     if len(all_costs) > 0:
-        res += "_" * 60 + '\n'
-        res += "Total Cost:\n"
-        for currency in all_costs.keys():
-            res += "\t\t%s %.2f\n" % (currency, all_costs[currency])
-        res += "\n"
+        empty_row = [""] * len(field_names)
+        rows.append(empty_row)
+        for currency, cost in all_costs.items():
+            row = empty_row[:]
+            row[0] = "Total Cost, {currency:>4}".format(**vars())
+            row[3] = "{currency:>4} {cost:.2f}".format(**vars())
+            
+            rows.append(row)
+
+    res = _table_string(field_names, rows, csv)
+
     return res
 
+def _currency_str(value, currency="$"):
+    return "{currency:>4} {value:.2f}".format(**vars())
+    
+def _table_string(field_names, rows, csv=False):
+    # Output a justified table string using the prettytable module.
+    # Fall back to Excel-ready tab-separated values if prettytable's not found 
+    # or CSV is requested
+    if not csv:
+        try:
+            import prettytable
+            table = prettytable.PrettyTable(field_names=field_names)
+            for row in rows:
+                table.add_row(row)
+            res = table.get_string()
+        except ImportError as e:
+            print("Unable to import prettytable module.  Outputting in TSV format")
+            csv = True
+    if csv:
+        lines = ["\t".join(field_names)]
+        for row in rows:
+            line = "\t".join([str(f) for f in row])
+            lines.append(line)
 
-# FIXME: finish this.
-def bill_of_materials_justified():
-    res = ''
-    columns = [s.rjust(8)
-               for s in ("Desc.", "Count", "Unit Price", "Total Price")]
-    all_costs = {}
-    for desc, (count, currency, price) in g_parts_dict.items():
-        if count > 0:
-            if price:
-                total = price * count
-                try:
-                    all_costs[currency] += total
-                except:
-                    all_costs[currency] = total
-
-                res += "%(desc)s %(count)s %(currency)s %(price)s %(currency)s %(total)s \n" % vars()
-            else:
-                res += "%(desc)s %(count)s " % vars()
-    if all_costs > 0:
-        res += "_" * 60 + '\n'
-        res += "Total Cost:\n"
-        for currency in all_costs.keys():
-            res += "\t\t%s %.2f\n" % (currency, all_costs[currency])
-        res += "\n"
-    return res
+        res = "\n".join(lines) 
+        
+    return res  + "\n"            
 
 # ================
 # = Bounding Box =
@@ -600,7 +644,17 @@ screw_dimensions = {
     'm5': {'nut_thickness': 4.7, 'nut_inner_diam': 7.9, 'nut_outer_diam': 8.8, 'screw_outer_diam': 5.0, 'cap_diam': 8.7, 'cap_height': 5},
 
 }
-
+bearing_dimensions = {
+    '608': {'inner_d':8, 'outer_d':22, 'thickness':7},
+    '688': {'inner_d':8, 'outer_d':16, 'thickness':5},
+    '686': {'inner_d':6, 'outer_d':13, 'thickness':5},
+    '626': {'inner_d':6, 'outer_d':19, 'thickness':6},
+    '625': {'inner_d':5, 'outer_d':16, 'thickness':5},
+    '624': {'inner_d':4, 'outer_d':13, 'thickness':5},
+    '623': {'inner_d':3, 'outer_d':10, 'thickness':4},
+    '603': {'inner_d':3, 'outer_d':9,  'thickness':5},
+    '633': {'inner_d':3, 'outer_d':13, 'thickness':5},
+}
 
 def screw(screw_type='m3', screw_length=16):
     dims = screw_dimensions[screw_type.lower()]
@@ -616,7 +670,6 @@ def screw(screw_type='m3', screw_length=16):
     )
     return ret
 
-
 def nut(screw_type='m3'):
     dims = screw_dimensions[screw_type.lower()]
     outer_rad = dims['nut_outer_diam']
@@ -628,13 +681,27 @@ def nut(screw_type='m3'):
     )
     return ret
 
+def bearing(bearing_type='624'):
+    dims = bearing_dimensions[bearing_type.lower()]
+    outerR = dims['outer_d']/2
+    innerR = dims['inner_d']/2
+    thickness = dims['thickness']
+    bearing = cylinder(outerR,thickness)
+    bearing.add_param('$fs', 1)
+    hole = cylinder(innerR,thickness+2)
+    hole.add_param('$fs', 1)
+    bearing = difference()(
+        bearing,
+        translate([0,0,-1])(hole)
+    )
+    return bearing
 
 # ==================
 # = PyEuclid Utils =
 # = -------------- =
 try:
-    import euclid
-    from euclid import *
+    import euclid3
+    from euclid3 import *
     # NOTE: The PyEuclid on PyPi doesn't include several elements added to
     # the module as of 13 Feb 2013.  Add them here until euclid supports them
     # TODO: when euclid updates, remove this cruft. -ETJ 13 Feb 2013
@@ -723,9 +790,26 @@ try:
                 src_up = EUC_FORWARD
             else:
                 src_up = EUC_UP
-
-        look_at_matrix = Matrix4.new_look_at(eye=dest_point, at=at, up=src_up)
-
+                
+        def _orig_euclid_look_at(eye, at, up):
+            '''
+            Taken from the original source of PyEuclid's Matrix4.new_look_at() 
+            prior to 1184a07d119a62fc40b2c6becdbeaf053a699047 (11 Jan 2015), 
+            as discussed here:
+            https://github.com/ezag/pyeuclid/commit/1184a07d119a62fc40b2c6becdbeaf053a699047
+        
+            We were dependent on the old behavior, which is duplicated here:
+            '''
+            z = (eye - at).normalized()
+            x = up.cross(z).normalized()
+            y = z.cross(x)
+  
+            m = Matrix4.new_rotate_triple_axis(x, y, z)
+            m.d, m.h, m.l = eye.x, eye.y, eye.z
+            return m
+                
+        look_at_matrix = _orig_euclid_look_at(eye=dest_point, at=at, up=src_up)
+        
         if is_scad(body):
             # If the body being altered is a SCAD object, do the matrix mult
             # in OpenSCAD
@@ -738,6 +822,8 @@ try:
             else:
                 res = look_at_matrix * body
         return res
+        
+
 
     # ========================================
     # = Vector drawing: 3D arrow from a line =
@@ -781,12 +867,6 @@ try:
     # = Offset =
     # = ------ =
     LEFT, RIGHT = radians(90), radians(-90)
-
-    def offset_polygon(point_arr, offset, inside=True, closed_poly=True):
-        # returns a closed solidPython polygon offset by offset distance
-        # from the polygon described by point_arr.
-        op = offset_points(point_arr, offset=offset, inside=inside, closed_poly=closed_poly)
-        return polygon(euc_to_arr(op))
 
     def offset_points(point_arr, offset, inside=True, closed_poly=True):
         # Given a set of points, return a set of points offset from

@@ -1,8 +1,7 @@
 #! /usr/bin/env python
-# -*- coding: UTF-8 -*-
+# -*- coding: utf-8 -*-
 import os
 import sys
-import re
 
 import unittest
 import tempfile
@@ -27,9 +26,12 @@ scad_test_case_templates = [
 {'name': 'scale',       'kwargs': {'v': 0.5}, 'expected': '\n\nscale(v = 0.5000000000);', 'args': {}, },
 {'name': 'rotate',      'kwargs': {'a': 45, 'v': [0, 0, 1]}, 'expected': '\n\nrotate(a = 45, v = [0, 0, 1]);', 'args': {}, },
 {'name': 'mirror',      'kwargs': {}, 'expected': '\n\nmirror(v = [0, 0, 1]);', 'args': {'v': [0, 0, 1]}, },
+{'name': 'resize',      'kwargs': {'newsize':[5,5,5], 'auto':[True, True, False]}, 'expected': '\n\nresize(auto = [true, true, false], newsize = [5, 5, 5]);', 'args': {}, },
 {'name': 'multmatrix',  'kwargs': {}, 'expected': '\n\nmultmatrix(m = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);', 'args': {'m': [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]}, },
 {'name': 'color',       'kwargs': {}, 'expected': '\n\ncolor(c = [1, 0, 0]);', 'args': {'c': [1, 0, 0]}, },
 {'name': 'minkowski',   'kwargs': {}, 'expected': '\n\nminkowski();', 'args': {}, },
+{'name': 'offset',      'kwargs': {'r': 1}, 'expected': '\n\noffset(r = 1);', 'args': {}, },
+{'name': 'offset',      'kwargs': {'delta': 1}, 'expected': '\n\noffset(chamfer = false, delta = 1);', 'args': {}, },
 {'name': 'hull',        'kwargs': {}, 'expected': '\n\nhull();', 'args': {}, },
 {'name': 'render',      'kwargs': {'convexity': None}, 'expected': '\n\nrender();', 'args': {}, },
 {'name': 'projection',  'kwargs': {'cut': None}, 'expected': '\n\nprojection();', 'args': {}, },
@@ -37,10 +39,37 @@ scad_test_case_templates = [
 {'name': 'import_stl',  'kwargs': {'layer': None, 'origin': (0,0)}, 'expected': '\n\nimport(file = "/Path/to/dummy.stl", origin = [0, 0]);', 'args': {'file': "'/Path/to/dummy.stl'"}, },
 {'name': 'import_dxf',  'kwargs': {'layer': None, 'origin': (0,0)}, 'expected': '\n\nimport(file = "/Path/to/dummy.dxf", origin = [0, 0]);', 'args': {'file': "'/Path/to/dummy.dxf'"}, },
 {'name': 'import_',     'kwargs': {'layer': None, 'origin': (0,0)}, 'expected': '\n\nimport(file = "/Path/to/dummy.dxf", origin = [0, 0]);', 'args': {'file': "'/Path/to/dummy.dxf'"}, },
+{'name': 'import_',     'kwargs': {'layer': None, 'origin': (0,0), 'convexity': 2}, 'expected': '\n\nimport(convexity = 2, file = "/Path/to/dummy.dxf", origin = [0, 0]);', 'args': {'file': "'/Path/to/dummy.dxf'"}, },
 {'name': 'linear_extrude',      'kwargs': {'twist': None, 'slices': None, 'center': False, 'convexity': None, 'height': 1, 'scale': 0.9}, 'expected': '\n\nlinear_extrude(center = false, height = 1, scale = 0.9000000000);', 'args': {}, },
-{'name': 'rotate_extrude',      'kwargs': {'convexity': None}, 'expected': '\n\nrotate_extrude();', 'args': {}, },
+{'name': 'rotate_extrude',      'kwargs': {'angle':90, 'segments': 4, 'convexity': None}, 'expected': '\n\nrotate_extrude($fn = 4, angle = 90);', 'args': {}, },
 {'name': 'intersection_for',    'kwargs': {}, 'expected': '\n\nintersection_for(n = [0, 1, 2]);', 'args': {'n': [0, 1, 2]}, },
 ]
+
+class TemporaryFileBuffer(object):
+    name = None
+    contents = None
+    def __enter__(self):
+        f = tempfile.NamedTemporaryFile(delete=False)
+        self.name = f.name
+        try:
+            f.close()
+        except:
+            self._cleanup()
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            with open(self.name, 'r') as f:
+                self.contents = f.read()
+        finally:
+            self._cleanup()
+
+    def _cleanup(self):
+        try:
+            os.unlink(self.name)
+        except:
+            pass
 
 
 class TestSolidPython(DiffOutput):
@@ -72,20 +101,70 @@ class TestSolidPython(DiffOutput):
         self.assertEqual(expected, actual)
 
     def test_parse_scad_callables(self):
-        test_str = (""
-                    "module hex (width=10, height=10,    \n"
-                    "            flats= true, center=false){}\n"
-                    "function righty (angle=90) = 1;\n"
-                    "function lefty(avar) = 2;\n"
-                    "module more(a=[something, other]) {}\n"
-                    "module pyramid(side=10, height=-1, square=false, centerHorizontal=true, centerVertical=false){}\n"
-                    "module no_comments(arg=10,   //test comment\n"
-                    "other_arg=2, /* some extra comments\n"
-                    "on empty lines */\n"
-                    "last_arg=4){}\n"
-                    "module float_arg(arg=1.0){}\n")
-        expected = [{'args': [], 'name': 'hex', 'kwargs': ['width', 'height', 'flats', 'center']}, {'args': [], 'name': 'righty', 'kwargs': ['angle']}, {'args': ['avar'], 'name': 'lefty', 'kwargs': []}, {'args': [], 'name': 'more', 'kwargs': ['a']}, {
-            'args': [], 'name': 'pyramid', 'kwargs': ['side', 'height', 'square', 'centerHorizontal', 'centerVertical']}, {'args': [], 'name': 'no_comments', 'kwargs': ['arg', 'other_arg', 'last_arg']}, {'args': [], 'name': 'float_arg', 'kwargs': ['arg']}]
+        test_str =  """
+                    module hex (width=10, height=10,    
+                                flats= true, center=false){}
+                    function righty (angle=90) = 1;
+                    function lefty(avar) = 2;
+                    module more(a=[something, other]) {}
+                    module pyramid(side=10, height=-1, square=false, centerHorizontal=true, centerVertical=false){}
+                    module no_comments(arg=10,   //test comment
+                    other_arg=2, /* some extra comments
+                    on empty lines */
+                    last_arg=4){}
+                    module float_arg(arg=1.0){}
+                    module arg_var(var5){}
+                    module kwarg_var(var2=78){}
+                    module var_true(var_true = true){}
+                    module var_false(var_false = false){}
+                    module var_int(var_int = 5){}
+                    module var_negative(var_negative = -5){}
+                    module var_float(var_float = 5.5){}
+                    module var_number(var_number = -5e89){}
+                    module var_empty_vector(var_empty_vector = []){}
+                    module var_simple_string(var_simple_string = "simple string"){}
+                    module var_complex_string(var_complex_string = "a \"complex\"\tstring with a\\"){}
+                    module var_vector(var_vector = [5454445, 565, [44545]]){}
+                    module var_complex_vector(var_complex_vector = [545 + 4445, 565, [cos(75) + len("yes", 45)]]){}
+                    module var_vector(var_vector = [5, 6, "string\twith\ttab"]){}
+                    module var_range(var_range = [0:10e10]){}
+                    module var_range_step(var_range_step = [-10:0.5:10]){}
+                    module var_with_arithmetic(var_with_arithmetic = 8 * 9 - 1 + 89 / 15){}
+                    module var_with_parentheses(var_with_parentheses = 8 * ((9 - 1) + 89) / 15){}
+                    module var_with_functions(var_with_functions = abs(min(chamferHeight2, 0)) */-+ 1){}
+                    module var_with_conditionnal_assignment(var_with_conditionnal_assignment = mytest ? 45 : yop){}
+                   """ 
+        expected = [
+            {'name': 'hex', 'args': [], 'kwargs': ['width', 'height', 'flats', 'center']}, 
+            {'name': 'righty', 'args': [], 'kwargs': ['angle']}, 
+            {'name': 'lefty', 'args': ['avar'], 'kwargs': []}, 
+            {'name': 'more', 'args': [], 'kwargs': ['a']}, 
+            {'name': 'pyramid', 'args': [], 'kwargs': ['side', 'height', 'square', 'centerHorizontal', 'centerVertical']}, 
+            {'name': 'no_comments', 'args': [], 'kwargs': ['arg', 'other_arg', 'last_arg']}, 
+            {'name': 'float_arg', 'args': [], 'kwargs': ['arg']}, 
+            {'name': 'arg_var', 'args': ['var5'], 'kwargs': []}, 
+            {'name': 'kwarg_var', 'args': [], 'kwargs': ['var2']}, 
+            {'name': 'var_true', 'args': [], 'kwargs': ['var_true']}, 
+            {'name': 'var_false', 'args': [],'kwargs': ['var_false']}, 
+            {'name': 'var_int', 'args': [], 'kwargs': ['var_int']}, 
+            {'name': 'var_negative', 'args': [], 'kwargs': ['var_negative']}, 
+            {'name': 'var_float', 'args': [], 'kwargs': ['var_float']}, 
+            {'name': 'var_number', 'args': [], 'kwargs': ['var_number']}, 
+            {'name': 'var_empty_vector', 'args': [], 'kwargs': ['var_empty_vector']}, 
+            {'name': 'var_simple_string', 'args': [], 'kwargs': ['var_simple_string']}, 
+            {'name': 'var_complex_string', 'args': [], 'kwargs': ['var_complex_string']}, 
+            {'name': 'var_vector', 'args': [], 'kwargs': ['var_vector']}, 
+            {'name': 'var_complex_vector', 'args': [], 'kwargs': ['var_complex_vector']}, 
+            {'name': 'var_vector', 'args': [], 'kwargs': ['var_vector']}, 
+            {'name': 'var_range', 'args': [], 'kwargs': ['var_range']}, 
+            {'name': 'var_range_step', 'args': [], 'kwargs': ['var_range_step']}, 
+            {'name': 'var_with_arithmetic', 'args': [], 'kwargs': ['var_with_arithmetic']}, 
+            {'name': 'var_with_parentheses', 'args': [], 'kwargs': ['var_with_parentheses']}, 
+            {'name': 'var_with_functions', 'args': [], 'kwargs': ['var_with_functions']}, 
+            {'name': 'var_with_conditionnal_assignment', 'args': [], 'kwargs': ['var_with_conditionnal_assignment']}
+        ]
+
+        from solid.solidpython import parse_scad_callables
         actual = parse_scad_callables(test_str)
         self.assertEqual(expected, actual)
 
@@ -98,6 +177,28 @@ class TestSolidPython(DiffOutput):
         abs_path = a._get_include_path(include_file)
         expected = "use <%s>\n\n\nsteps(howmany = 3);" % abs_path
         self.assertEqual(expected, actual)
+
+    def test_use_reserved_words(self):
+        scad_str = '''module reserved_word_arg(or=3){\n\tcube(or);\n}\nmodule or(arg=3){\n\tcube(arg);\n}\n'''
+
+        fd, path = tempfile.mkstemp(text=True)
+        try:
+            os.close(fd)
+            with open(path, "w") as f:
+                f.write(scad_str)
+
+            use(path)
+            a = reserved_word_arg(or_=5)
+            actual = scad_render(a)
+            expected = "use <%s>\n\n\nreserved_word_arg(or = 5);"%path;
+            self.assertEqual(expected, actual)
+
+            b = or_(arg=5)
+            actual = scad_render(b)
+            expected = "use <%s>\n\n\nor(arg = 5);"%path;
+            self.assertEqual(expected, actual)
+        finally:
+            os.remove(path)
 
     def test_include(self):
         include_file = self.expand_scad_path("examples/scad_to_include.scad")
@@ -165,7 +266,7 @@ class TestSolidPython(DiffOutput):
         )
 
         a = cube(10, center=True) + h + h_vert
-        expected = '\n\ndifference(){\n\tunion() {\n\t\tunion() {\n\t\t\tcube(center = true, size = 10);\n\t\t}\n\t\trotate(a = -90, v = [0, 1, 0]) {\n\t\t}\n\t}\n\t/* Holes Below*/\n\tunion(){\n\t\tunion(){\n\t\t\trotate(a = 90, v = [0, 1, 0]) {\n\t\t\t\tcylinder(center = true, h = 20, r = 2);\n\t\t\t}\n\t\t}\n\t\trotate(a = -90, v = [0, 1, 0]){\n\t\t\trotate(a = 90, v = [0, 1, 0]) {\n\t\t\t\tcylinder(center = true, h = 20, r = 2);\n\t\t\t}\n\t\t}\n\t} /* End Holes */ \n}'
+        expected = '\n\ndifference(){\n\tunion() {\n\t\tcube(center = true, size = 10);\n\t\trotate(a = -90, v = [0, 1, 0]) {\n\t\t}\n\t}\n\t/* Holes Below*/\n\tunion(){\n\t\trotate(a = 90, v = [0, 1, 0]) {\n\t\t\tcylinder(center = true, h = 20, r = 2);\n\t\t}\n\t\trotate(a = -90, v = [0, 1, 0]){\n\t\t\trotate(a = 90, v = [0, 1, 0]) {\n\t\t\t\tcylinder(center = true, h = 20, r = 2);\n\t\t\t}\n\t\t}\n\t} /* End Holes */ \n}'
         actual = scad_render(a)
         self.assertEqual(expected, actual)
 
@@ -190,7 +291,7 @@ class TestSolidPython(DiffOutput):
 
         a = p1 + p2
 
-        expected = '\n\nunion() {\n\tdifference(){\n\t\tdifference() {\n\t\t\tcube(center = true, size = 10);\n\t\t}\n\t\t/* Holes Below*/\n\t\tdifference(){\n\t\t\tcylinder(center = true, h = 12, r = 2);\n\t\t} /* End Holes */ \n\t}\n\tcylinder(center = true, h = 14, r = 1.5000000000);\n}'
+        expected = '\n\nunion() {\n\tdifference(){\n\t\tdifference() {\n\t\t\tcube(center = true, size = 10);\n\t\t}\n\t\t/* Holes Below*/\n\t\tunion(){\n\t\t\tcylinder(center = true, h = 12, r = 2);\n\t\t} /* End Holes */ \n\t}\n\tcylinder(center = true, h = 14, r = 1.5000000000);\n}'
         actual = scad_render(a)
         self.assertEqual(expected, actual)
 
@@ -202,40 +303,69 @@ class TestSolidPython(DiffOutput):
             rad = 15
             c = translate([rad * math.cos(rads), rad * math.sin(rads)])(square(10))
             return c
-        tmp = tempfile.NamedTemporaryFile()
+        with TemporaryFileBuffer() as tmp:
+            scad_render_animated_file(my_animate, steps=2, back_and_forth=False,
+                                      filepath=tmp.name, include_orig_code=False)
 
-        scad_render_animated_file(my_animate, steps=2, back_and_forth=False,
-                                  filepath=tmp.name, include_orig_code=False)
-        tmp.seek(0)
-        actual = tmp.read()
-        expected = b'\nif ($t >= 0.0 && $t < 0.5){   \n\ttranslate(v = [15.0000000000, 0.0000000000]) {\n\t\tsquare(size = 10);\n\t}\n}\nif ($t >= 0.5 && $t < 1.0){   \n\ttranslate(v = [-15.0000000000, 0.0000000000]) {\n\t\tsquare(size = 10);\n\t}\n}\n'
-        tmp.close()
+        actual = tmp.contents
+        expected = '\nif ($t >= 0.0 && $t < 0.5){   \n\ttranslate(v = [15.0000000000, 0.0000000000]) {\n\t\tsquare(size = 10);\n\t}\n}\nif ($t >= 0.5 && $t < 1.0){   \n\ttranslate(v = [-15.0000000000, 0.0000000000]) {\n\t\tsquare(size = 10);\n\t}\n}\n'
+
         self.assertEqual(expected, actual)
 
     def test_scad_render_to_file(self):
         a = circle(10)
 
         # No header, no included original code
-        tmp = tempfile.NamedTemporaryFile()
-        scad_render_to_file(a, filepath=tmp.name, include_orig_code=False)
-        tmp.seek(0)
-        actual = tmp.read()
-        expected = b'\n\ncircle(r = 10);'
-        tmp.close()
+        with TemporaryFileBuffer() as tmp:
+            scad_render_to_file(a, filepath=tmp.name, include_orig_code=False)
+
+        actual = tmp.contents
+        expected = '\n\ncircle(r = 10);'
+
         self.assertEqual(expected, actual)
 
         # Header
-        tmp = tempfile.NamedTemporaryFile()
-        scad_render_to_file(a, filepath=tmp.name, include_orig_code=False,
-                            file_header='$fn = 24;')
-        tmp.seek(0)
-        actual = tmp.read()
-        expected = b'$fn = 24;\n\ncircle(r = 10);'
-        tmp.close()
+        with TemporaryFileBuffer() as tmp:
+            scad_render_to_file(a, filepath=tmp.name, include_orig_code=False,
+                                file_header='$fn = 24;')
+
+        actual = tmp.contents
+        expected = '$fn = 24;\n\ncircle(r = 10);'
+
         self.assertEqual(expected, actual)
 
         # TODO: test include_orig_code=True, but that would have to
         # be done from a separate file, or include everything in this one
+
+    def test_numpy_type(self):
+        try:
+            import numpy
+            numpy_cube = cube(size=numpy.array([1,2,3]))
+            expected ='\n\ncube(size = [1,2,3]);'
+            actual = scad_render(numpy_cube)
+            self.assertEqual(expected, actual, 'Numpy SolidPython not rendered correctly')
+        except ImportError:
+            pass
+
+    def test_custom_iterables(self):
+        from euclid3 import Vector3
+
+        class CustomIterable:
+            def __iter__(self):
+                return iter([1, 2, 3])
+
+        expected ='\n\ncube(size = [1, 2, 3]);'
+        iterables = [
+            [1, 2, 3],
+            (1, 2, 3),
+            Vector3(1, 2, 3),
+            CustomIterable(),
+        ]
+
+        for iterable in iterables:
+            name = type(iterable).__name__
+            actual = scad_render(cube(size=iterable))
+            self.assertEqual(expected, actual, '%s SolidPython not rendered correctly' % name)
 
 
 def single_test(test_dict):

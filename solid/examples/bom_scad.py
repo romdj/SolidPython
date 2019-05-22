@@ -34,12 +34,13 @@ m3_rad = 1.4
 
 doohickey_h = 5
 
+set_bom_headers("link", "leftover")
 
 def head():
     return cylinder(h=head_height, r=head_rad)
 
 
-@bom_part("M3x16 Bolt", 0.12, currency="€")
+@bom_part("M3x16 Bolt", 0.12, currency="€", link="http://example.io/M3x16", leftover=0)
 def m3_16(a=3):
     bolt_height = 16
     m = union()(
@@ -51,7 +52,7 @@ def m3_16(a=3):
     return m
 
 
-@bom_part("M3x12 Bolt", 0.09)
+@bom_part("M3x12 Bolt", 0.09, leftover=0)
 def m3_12():
     bolt_height = 12
     m = union()(
@@ -112,5 +113,10 @@ if __name__ == '__main__':
 
     print("%(__file__)s: SCAD file written to: \n%(file_out)s" % vars())
     print(bom)
+
+    print("Or, Spreadsheet-ready TSV:\n\n")
+    bom = bill_of_materials(csv=True)
+    print(bom)
+
 
     scad_render_to_file(a, file_out)
